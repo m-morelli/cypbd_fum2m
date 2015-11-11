@@ -1,0 +1,317 @@
+--
+-- import the in/inout meta-models
+--
+modeltype FEC uses "http://www.evidence.eu.com/functional";
+modeltype UML uses "http://www.eclipse.org/uml2/4.0.0/UML";
+
+--
+-- import other meta-models involved in the transformation
+-- 
+// specify FlowDirection::_'in' & FlowDirection::_'out'
+modeltype PortAndFlows uses "http://www.eclipse.org/papyrus/0.7.0/SysML/PortAndFlows";
+
+--
+-- the transformation
+--
+transformation functionalTransform(in src:FEC, in ycr:UML, inout dst:UML);
+
+--
+-- properties
+--
+// the source model
+property src_mdl =  src.rootObjects()![FEC::Model];
+
+// the collection of profiles that come with the YchartRobotics profile
+// (YchartRobotics provided as input parameter)
+property ycr_prf = ycr.rootObjects()![Profile];
+
+// the SRFunctional profile (YchartRobotics/Functional)
+// & the SRSubsystem stereotype
+// & the SRPort stereotype
+// & the SRBinaryOrder stereotype
+// & the MonoDimensionalArray stereotype
+// & the MultiDimensionalArray stereotype
+property srf_prf = ycr_prf.ownedElement[Profile]->select(p | p.name = "Functional")->asOrderedSet()->first();
+property sub_stp = srf_prf.ownedStereotype![name = "SRSubsystem"];
+property ctl_stp = srf_prf.ownedStereotype![name = "Control"];
+property prt_stp = srf_prf.ownedStereotype![name = "SRPort"];
+property bor_stp = srf_prf.ownedStereotype![name = "SRBinaryOrder"];
+property a1d_stp = srf_prf.ownedStereotype![name = "MonoDimensionalArray"];
+property aNd_stp = srf_prf.ownedStereotype![name = "MultiDimensionalArray"];
+
+// the ScicosTypes package (YchartRobotics/Types/ScicosTypes)
+// & all the primitive types defined within the package
+// & the Real DataType defined by SysMLPrimitiveTypes
+property typ_pkg = ycr_prf.ownedElement![Package];
+property cos_pkg = typ_pkg.ownedElement[Package]->select(p | p.name = "ScicosTypes")->asOrderedSet()->first();
+property i32_typ = cos_pkg.ownedElement[PrimitiveType]->select(e | e.name = "Int32")->asOrderedSet()->first();
+property uis_typ = cos_pkg.ownedElement[PrimitiveType]->select(e | e.name = "UInt16")->asOrderedSet()->first();
+property uil_typ = cos_pkg.ownedElement[PrimitiveType]->select(e | e.name = "UInt64")->asOrderedSet()->first();
+property i64_typ = cos_pkg.ownedElement[PrimitiveType]->select(e | e.name = "Int64")->asOrderedSet()->first();
+property i08_typ = cos_pkg.ownedElement[PrimitiveType]->select(e | e.name = "Int8")->asOrderedSet()->first();
+property i16_typ = cos_pkg.ownedElement[PrimitiveType]->select(e | e.name = "Int16")->asOrderedSet()->first();
+property uim_typ = cos_pkg.ownedElement[PrimitiveType]->select(e | e.name = "UInt32")->asOrderedSet()->first();
+property uit_typ = cos_pkg.ownedElement[PrimitiveType]->select(e | e.name = "UInt8")->asOrderedSet()->first();
+property sml_mdl = typ_pkg.ownedElement[PackageImport]->importedPackage[UML::Model]->select(m | m.name = "SysMLPrimitiveTypes")->asOrderedSet()->first();
+property rea_typ = sml_mdl.ownedElement[DataType]->select(e | e.name = "Real")->asOrderedSet()->first();
+
+// the destination model
+// & the Block stereotype (SysML::Blocks)
+property dst_mdl =  dst.rootObjects()![UML::Model];
+property blk_stp = dst_mdl.getAppliedProfiles()->ownedStereotype![name = "Block"];
+
+--
+-- transform entry point
+--
+main() {
+
+	--
+	-- perform the M2M transformation
+	--
+	log("TRANSFORMATION BEGIN");
+	log("====================");
+	log("");
+
+	// apply profiles & subprofiles
+	// to the destination model
+	log("Applying the Functional profile to destination model...");
+	dst_mdl.applyProfile(srf_prf);	// functional
+	log("done.\n");
+
+	// give the dest model a name (Functional)
+	log("Renaming the destination model as \"Functional\"...");
+	dst_mdl.name := "Functional";
+	log("done.\n");
+
+	// generate contents (FunctionalSystem block)
+	log("Generating the FunctionalSystem block...");
+	var blkFunctSystem := object Class { name := "FunctionalSystem" };
+	dst_mdl.ownedType += blkFunctSystem;
+	safelyApplyStereotype(blkFunctSystem, blk_stp);
+	log("done.\n");
+
+	// generate contents (FunctionalSystem's owned elements)
+	//
+	// transform FEC::Block(s) with FEC::Port(s) to SRSubsystem(s) with SRPort(s)
+	log("Generating SRSubsystem and SRPort elements...");
+	var setSRSubsystems := src_mdl.block[Subsystem]->map toSRSubsystem()->asSet();
+	dst_mdl.packagedElement += setSRSubsystems;
+	log("done.\n");
+
+	// add the Control stereotype to SRSubsystem(s) corresponding to FEC::Subsystems(s) with an empty type
+	log("Marking SRSubsystems as Control elements...");
+--	src_mdl.block[Subsystem]->select(s | s.type.size()=0)->map toControlBlock()->asSet();
+	setSRSubsystems->select(s | s.getValue(sub_stp, "type").oclAsType(String).size()=0)->map toControlSubsystem();
+	log("done.\n");
+
+	// add them to the FunctionalSystem block
+	log("Adding generated SRSubsystems Blocks with SRPort elements to (functional) System block...");
+	var ost_ptySubsys := setSRSubsystems->map toProperty()->asOrderedSet();
+	blkFunctSystem.ownedAttribute += ost_ptySubsys;
+	log("done.\n"); 
+
+	// transform FEC::Signal(s) to UML::Connector(s)
+	log("Generating connections...");
+	var setSignals := src_mdl.link
+						->select(s | s.source.container().oclIsKindOf(Subsystem) and s.destination.container().oclIsKindOf(Subsystem))
+							->oclAsType(Signal)->asSet();
+	var setConnections := setSignals->map toConnector()->asSet();
+	blkFunctSystem.ownedConnector += setConnections;
+	log("done.\n");
+
+	// generate partial orders
+	log("Generating partial execution order constraints (for SRSubsystems)...");
+	var setAllBinaryOrders : Set(Dependency) := Set{};
+	setSRSubsystems->map toSetOfSRBinaryOrders(setSignals)
+						->forEach(setBinaryOrder){setAllBinaryOrders += setBinaryOrder};
+	dst_mdl.packagedElement += setAllBinaryOrders;
+	log("done.\n");
+
+	log("");
+	log("TRANSFORMATION END");
+	log("==================");
+
+}
+
+--
+-- maps
+--
+// FEC::Subsystem -> SRSubsystem
+mapping Subsystem::toSRSubsystem() : Class {
+
+	// add the class to the destination model instance
+	// *so that the profiles are applicable*
+	// & set the basic name attribute
+	dst_mdl.packagedElement += result;
+	result.name := self.id;
+
+	// apply stereotypes: SRSubsystem
+	safelyApplyStereotype(result, sub_stp);
+	if (self.type.size()=0) then {safelyApplyStereotype(result, ctl_stp);} endif;
+
+	// set its attributes
+	result.visibility := VisibilityKind::public;
+	result.setValue(sub_stp, "feedThrough", self.Feedthrough);
+	result.setValue(sub_stp, "type", self.type);
+	result.setValue(sub_stp, "sampleTime", self.sampletime.toString().toInteger());
+
+	// ports
+	self.hasinport->toSRPort(result);
+	self.hasoutport->toSRPort(result);
+
+}
+
+mapping Class::toControlSubsystem() {
+	safelyApplyStereotype(self, ctl_stp);
+}
+
+// FEC::Signal -> Connector
+mapping Signal::toConnector() : Connector {
+
+	// set the basic name attribute
+	result.name := self.source.id + "-" + self.destination.id;
+
+	// set connector's endpoints
+	result._end	+= self.source.map toConnectorEnd(self);
+	result._end += self.destination.map toConnectorEnd(self);
+
+}
+
+// FEC::Port -> SRPort
+mapping FEC::Port::toSRPort(inout blkSRSubsystem : Class) : UML::Port {
+
+	// add the port to the class instance in the model
+	// *so that the profiles are applicable*
+	// & set the basic attributes name and type
+	blkSRSubsystem.ownedAttribute += result;
+	result.name := self.id;
+	var typPortType : Type := cos_pkg.ownedElement[PrimitiveType]->asSet()
+								->select(t | t.name.toLower() = self.datatypename)
+									->asOrderedSet()->first();
+	if (typPortType.oclIsInvalid()) then {typPortType := rea_typ} endif;
+	result.type := typPortType;
+
+	// apply stereotype: SRPort,
+	// MultiDimensionalArray OR MonoDimensionalArray (& set its basic attributes)
+	safelyApplyStereotype(result, prt_stp);
+	if (self.numDims > 1) then {
+		safelyApplyStereotype(result, aNd_stp);
+		result.setValue(aNd_stp, "numDims", self.numDims);
+		var uuu := self.dims->at(1);
+		var vvv := self.dims->at(2);
+		result.setValue(aNd_stp, "dims[0]", uuu);
+		result.setValue(aNd_stp, "dims[1]", vvv);
+	}
+	else {
+		safelyApplyStereotype(result, a1d_stp);
+		result.setValue(a1d_stp, "length", self.dims->at(1));
+	} endif;
+
+	// set its attributes
+	result.aggregation := AggregationKind::composite; // Papyrus creates this way FlowPorts in IBDs
+	                                                  // by default, I don't know exactly what it means 
+	if (self.oclIsKindOf(InPort)) then {result.setValue(prt_stp, "direction", FlowDirection::_in);}
+	else {	if (self.oclIsKindOf(OutPort)) then {result.setValue(prt_stp, "direction", FlowDirection::_out);}
+			else {log("ERROR: unknown port type");} endif
+	} endif;
+
+}
+
+// FEC::Port -> ConnectorEnd
+mapping FEC::Port::toConnectorEnd(in signal : Signal) : ConnectorEnd {
+
+	// NOTE: the input parameter (Signal) is IGNORED;
+	//       however, it is fundamental to have it as input parameter
+	//		 since otherwise this mapping wouldn't be called in case
+	//		 an output port has multiple signals
+	//		 see: http://www.eclipse.org/forums/index.php/mv/msg/167463/531277/#msg_531277
+	//		 	"Assuming AtoB is a mapping, the first time you map something using that
+	//			mapping, a new target element is created. Each time after that, the
+	//			trace information is used to get that same target element, if you map
+	//			the same source element using the same mapping function (and with the
+	//			same parameters)."
+	//
+	// 		 In this case, we change the parameters to get the mapping be called every time
+	//		 is needed.
+
+	// inspect trace records for given mappings only
+	// (FEC::Port::toSRPort() & Subsystem::toSRSubsystem())
+	result.role := self.resolveoneIn(FEC::Port::toSRPort, UML::Port);
+	result.partWithPort := self.container().oclAsType(Subsystem).
+									resolveoneIn(Subsystem::toSRSubsystem, Class).
+										resolveoneIn(Class::toProperty, UML::Property);
+}
+
+// Class -> Property (Part)
+mapping Class::toProperty() : UML::Property {
+
+	// A "class" is automatically created 
+	result.name := self.name;
+
+	// Create a "type"
+	result.type := self;
+
+	// Make it a part, not a reference (AggregationKind::none, AggregationKind::shared)
+	result.aggregation := AggregationKind::composite;
+
+}
+
+// Class -> SRBinaryOrder
+mapping Class::toSetOfSRBinaryOrders(in setSignals : Set(Signal)) : Set(Dependency)
+when {self.getValue(sub_stp, "feedThrough") = true} {
+
+	// a Set is an immutable Collection, i.e., a group of elements
+	// that cannot be changed after it has been created. One possible
+	// solution is to create an init section and to define what will
+	// be the reference for the result.
+	// For details and other approaches, refer to
+	// http://www.levysiqueira.com.br/2011/01/returning-set-qvto/
+
+	init {
+
+		result := self.ownedAttribute->select(p | p.getValue(prt_stp, "direction") = FlowDirection::_in)
+					->oclAsType(UML::Port)
+						->map toSRBinaryOrder(self.name, setSignals)->asSet();
+
+	}
+
+}
+
+// UML::Port -> Dependency
+mapping UML::Port::toSRBinaryOrder(in strClientName : String, in setSignals : Set(Signal)) : Dependency {
+
+	// add the class to the destination model instance
+	// *so that the profiles are applicable*
+	dst_mdl.packagedElement += result;
+
+	// apply stereotypes: SRBinaryOrder
+	safelyApplyStereotype(result, bor_stp);
+
+	// get supplier
+	var clsSupplier := setSignals![destination.id = self.name]				// Signal
+						.source.container().oclAsType(Subsystem)			// supplier Subsystem
+							.resolveone(Class);								// supplier Class
+
+	// set its attributes: name, supplier & client 
+	result.name := 	strClientName + "DependsOn" + clsSupplier.name;
+	result.supplier := clsSupplier.resolveoneIn(Class::toProperty, UML::Property);
+	result.client := self.container().oclAsType(Class).resolveoneIn(Class::toProperty, UML::Property);
+
+}
+
+--
+-- queries
+--
+
+--
+-- helpers
+--
+-- apply a stereotype to an element with error-checking
+helper safelyApplyStereotype(inout element : Element, in stereotype : Stereotype) {
+	if (not element.isStereotypeApplicable(stereotype)) then {
+	 	log("ERROR: stereotype " + stereotype.qualifiedName + " is not applicable to element " + element.repr());
+	} else {
+		element.applyStereotype(stereotype);
+		log("Applied the stereotype " + stereotype.qualifiedName);
+	} endif;
+}
